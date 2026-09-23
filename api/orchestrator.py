@@ -10,6 +10,7 @@ import colorsys
 import json
 import os
 import random
+import threading
 from io import BytesIO
 from typing import Any, Optional, Tuple
 
@@ -40,9 +41,17 @@ app = Flask(__name__)
 
 
 # ============================================================================
-# Image Processing
+# Image cache
 # ============================================================================
 
+_IMAGE_CACHE_MAX_SIZE = 32
+
+_image_cache: dict[
+    str,
+    tuple[str, ColorPalette, ColorPalette],
+] = {}
+
+_image_cache_lock = threading.Lock()
 
 class ImageData:
     """
@@ -96,45 +105,83 @@ class ImageData:
         return self._song_palette
 
 
-def load_image_with_fallback(url: str) -> Tuple[str, ColorPalette, ColorPalette]:
+def load_image_with_fallback(
+    url: str,
+) -> Tuple[str, ColorPalette, ColorPalette]:
     """
-    Load image and extract color palettes, with fallback handling.
-    
-    Args:
-        url: URL to the album art image
-        
-    Returns:
-        Tuple of (base64_image, bar_palette, song_palette)
+    Load image and extract color palettes.
+
+    Results are cached by image URL so the same album artwork is not
+    downloaded and processed repeatedly.
     """
+
     if url:
+        # ------------------------------------------------------------
+        # Fast cache lookup
+        # ------------------------------------------------------------
+
+        with _image_cache_lock:
+            cached = _image_cache.get(url)
+
+        if cached is not None:
+            return cached
+
+        # ------------------------------------------------------------
+        # Download + process
+        # ------------------------------------------------------------
+
         try:
             image_data = ImageData(url)
-            return (
+
+            result = (
                 image_data.get_base64(),
                 image_data.bar_palette,
                 image_data.song_palette,
             )
-        except ImageProcessingError:
-            pass  # Fall through to placeholder
 
-    # Try placeholder URL for random colors
+            # --------------------------------------------------------
+            # Store in bounded cache
+            # --------------------------------------------------------
+
+            with _image_cache_lock:
+                if len(_image_cache) >= _IMAGE_CACHE_MAX_SIZE:
+                    # Remove oldest inserted item.
+                    first_key = next(
+                        iter(_image_cache)
+                    )
+
+                    del _image_cache[first_key]
+
+                _image_cache[url] = result
+
+            return result
+
+        except ImageProcessingError:
+            pass
+
+    # ------------------------------------------------------------
+    # Placeholder
+    # ------------------------------------------------------------
+
     try:
-        image_data = ImageData(svg_config.placeholder_url)
+        image_data = ImageData(
+            svg_config.placeholder_url
+        )
+
         return (
             svg_config.placeholder_image,
             image_data.bar_palette,
             image_data.song_palette,
         )
-    except ImageProcessingError:
-        pass  # Fall through to defaults
 
-    # Use defaults
+    except ImageProcessingError:
+        pass
+
     return (
         svg_config.placeholder_image,
         svg_config.default_bar_palette,
         svg_config.default_song_palette,
     )
-
 
 def normalize_text_palette(
     palette: ColorPalette,
@@ -625,11 +672,17 @@ def catch_all(path: str) -> Response:
 
     svg = make_svg(track_data, background_color, border_color, background_type, show_status, is_compact)
 
-    resp = Response(svg, mimetype="image/svg+xml")
-    resp.headers["Cache-Control"] = "s-maxage=1"
+    resp = Response(
+        svg,
+        mimetype="image/svg+xml",
+    )
+
+    resp.headers["Cache-Control"] = (
+        "public, max-age=0, s-maxage=1, "
+        "stale-while-revalidate=2"
+    )
 
     return resp
-
 
 @app.route("/preview")
 def preview_page() -> Response:
