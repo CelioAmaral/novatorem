@@ -111,24 +111,16 @@ def load_image_with_fallback(
     """
     Load image and extract color palettes.
 
-    Results are cached by image URL so the same album artwork is not
-    downloaded and processed repeatedly.
+    Processed album artwork is cached by image URL.
     """
 
     if url:
-        # ------------------------------------------------------------
-        # Fast cache lookup
-        # ------------------------------------------------------------
-
+        # Check cache
         with _image_cache_lock:
             cached = _image_cache.get(url)
 
         if cached is not None:
             return cached
-
-        # ------------------------------------------------------------
-        # Download + process
-        # ------------------------------------------------------------
 
         try:
             image_data = ImageData(url)
@@ -139,18 +131,11 @@ def load_image_with_fallback(
                 image_data.song_palette,
             )
 
-            # --------------------------------------------------------
-            # Store in bounded cache
-            # --------------------------------------------------------
-
+            # Keep cache bounded
             with _image_cache_lock:
                 if len(_image_cache) >= _IMAGE_CACHE_MAX_SIZE:
-                    # Remove oldest inserted item.
-                    first_key = next(
-                        iter(_image_cache)
-                    )
-
-                    del _image_cache[first_key]
+                    oldest_key = next(iter(_image_cache))
+                    del _image_cache[oldest_key]
 
                 _image_cache[url] = result
 
@@ -159,10 +144,7 @@ def load_image_with_fallback(
         except ImageProcessingError:
             pass
 
-    # ------------------------------------------------------------
-    # Placeholder
-    # ------------------------------------------------------------
-
+    # Placeholder fallback
     try:
         image_data = ImageData(
             svg_config.placeholder_url
