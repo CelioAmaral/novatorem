@@ -139,7 +139,8 @@ class SpotifyTokenManager:
 
 # Global token manager instance.
 _token_manager = SpotifyTokenManager()
-
+_audio_features_cache: dict[str, Optional[AudioFeatures]] = {}
+_audio_features_lock = threading.Lock()
 
 # ============================================================================
 # Audio Features Cache
@@ -223,28 +224,24 @@ def get_recent_tracks(limit: int = 10) -> dict[str, Any]:
     return _api_get(url)
 
 
-def get_audio_features(
-    track_id: str,
-) -> Optional[AudioFeatures]:
+def get_audio_features(track_id: str) -> Optional[AudioFeatures]:
     """
-    Fetch audio features for a track.
+    Fetch audio features for a track from Spotify.
 
-    Results are cached by track ID because audio features do not change.
+    Audio features are cached by track ID because they do not change
+    during playback of the same track.
     """
 
     if not track_id:
         return None
 
-    # Fast cache lookup.
+    # Check cache first
     with _audio_features_lock:
         if track_id in _audio_features_cache:
             return _audio_features_cache[track_id]
 
     try:
-        url = (
-            "https://api.spotify.com/v1/"
-            f"audio-features/{track_id}"
-        )
+        url = f"https://api.spotify.com/v1/audio-features/{track_id}"
 
         data = _api_get(url)
 
@@ -260,15 +257,13 @@ def get_audio_features(
             )
 
     except (APIError, NoTracksError):
-        # Do not repeatedly request a known-unavailable feature.
         features = None
 
-    # Store result, including None.
+    # Store result for this track
     with _audio_features_lock:
         _audio_features_cache[track_id] = features
 
     return features
-
 
 def _extract_track_info(
     item: dict[str, Any],
